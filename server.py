@@ -56,6 +56,10 @@ async def state(player_id: int):
 async def heal():
     return {"status": "alive", "timestamp": time.time()}
 
+@app.get("/players")
+async def get_players():
+    return {"players": [p.to_dict() for p in game.players.values()]}
+
 @app.get("/stats")
 async def stats():
     return game.get_stats()
