@@ -1,0 +1,12 @@
+# shared.py
+# Общие константы для клиента и сервера
+MAX_AMMO = 30
+MAX_HEALTH = 100
+MAX_DEPTH = 25
+PLAYER_SPEED = 3.0
+SHOT_COOLDOWN = 0.25
+RELOAD_TIME = 1.8
+BOMB_EXPLODE_TIME = 40.0
+ROUND_TIME = 120.0
+BODY_DAMAGE = 20
+HEAD_DAMAGE = 60
