@@ -1,4 +1,5 @@
-# game_state.py (отладочная версия, без удаления и проверки уникальности)
+# game_state.py
+# Финальная версия 0.7
 import math
 import time
 import random
@@ -10,7 +11,6 @@ from shared import *
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Карта (та же, что и раньше)
 MAP = [
     "1111111111",
     "1000000001",
@@ -44,9 +44,9 @@ class Player:
     x: float
     y: float
     angle: float
-    health: int = 100
-    ammo: int = 30
-    max_ammo: int = 30
+    health: int = MAX_HEALTH
+    ammo: int = MAX_AMMO
+    max_ammo: int = MAX_AMMO
     reloading: bool = False
     reload_timer: float = 0.0
     alive: bool = True
@@ -96,7 +96,7 @@ class Bomb:
 @dataclass
 class Round:
     phase: str = 'playing'
-    time_left: float = 120.0
+    time_left: float = ROUND_TIME
     winner: Optional[str] = None
 
     def to_dict(self):
@@ -114,9 +114,11 @@ class GameState:
         logger.info("GameState инициализирован")
 
     def add_player(self, name: str, team: str) -> Optional[Player]:
-        # ВРЕМЕННО ОТКЛЮЧАЕМ ПРОВЕРКУ УНИКАЛЬНОСТИ
-        # if any(p.name == name for p in self.players.values()):
-        #     return None
+        # Проверка уникальности имени
+        if any(p.name == name for p in self.players.values()):
+            logger.warning(f"Попытка добавить игрока с занятым именем: {name}")
+            return None
+        # Балансировка команды, если передана невалидная
         if team not in ('T','CT'):
             t = sum(1 for p in self.players.values() if p.team=='T' and p.alive)
             ct = sum(1 for p in self.players.values() if p.team=='CT' and p.alive)
@@ -136,7 +138,7 @@ class GameState:
         )
         self.players[self.next_id] = player
         self.next_id += 1
-        logger.info(f"ДОБАВЛЕН ИГРОК: {name} ({team}), всего игроков: {len(self.players)}")
+        logger.info(f"Добавлен игрок {name} ({team}), всего: {len(self.players)}")
         return player
 
     def remove_player(self, player_id: int):
@@ -148,14 +150,14 @@ class GameState:
         return self.players.get(pid)
 
     def update(self, dt: float):
-        # ВРЕМЕННО ОТКЛЮЧАЕМ ТАЙМАУТ
-        # now = time.time()
-        # for pid, p in list(self.players.items()):
-        #     if now - p.last_action_time > 3.0:
-        #         logger.info(f"Игрок {p.name} отключён по таймауту")
-        #         self.remove_player(pid)
+        now = time.time()
+        # Проверка таймаута (3 секунды без действия)
+        for pid, p in list(self.players.items()):
+            if now - p.last_action_time > 3.0:
+                logger.info(f"Игрок {p.name} (ID {pid}) отключён по таймауту")
+                self.remove_player(pid)
 
-        # Основная логика (раунд, бомба, игроки) – без изменений
+        # Обновление раунда
         if self.round.phase == 'playing':
             self.round.time_left -= dt
             if self.round.time_left <= 0:
@@ -163,6 +165,7 @@ class GameState:
                 winner = 'CT' if self.bomb.status != 'planted' else 'T'
                 self.end_round(winner)
 
+        # Бомба
         if self.bomb.status == 'planted':
             self.bomb.timer -= dt
             if self.bomb.timer <= 0:
@@ -176,18 +179,214 @@ class GameState:
                     self.bomb.defusing = False
                     self.end_round('CT')
 
+        # Игроки
         for player in self.players.values():
             if not player.alive:
                 continue
-            # Перезарядка, движение, стрельба (оставляем как было, но можно упростить)
-            # ... (код из предыдущих версий)
+            # Перезарядка
+            if player.reloading:
+                player.reload_timer -= dt
+                if player.reload_timer <= 0:
+                    player.reloading = False
+                    player.ammo = player.max_ammo
 
-        self.check_round_end()
+            # Движение
+            inputs = player.inputs
+            if inputs['mouse_dx'] != 0:
+                player.angle += inputs['mouse_dx'] * 2.0 * dt * 10
+                player.angle %= 2 * math.pi
+
+            dx, dy = 0.0, 0.0
+            if inputs['forward']:
+                dx += math.cos(player.angle)
+                dy += math.sin(player.angle)
+            if inputs['backward']:
+                dx -= math.cos(player.angle)
+                dy -= math.sin(player.angle)
+            if inputs['left']:
+                dx += math.cos(player.angle - math.pi/2)
+                dy += math.sin(player.angle - math.pi/2)
+            if inputs['right']:
+                dx += math.cos(player.angle + math.pi/2)
+                dy += math.sin(player.angle + math.pi/2)
+
+            length = math.hypot(dx, dy)
+            if length > 0:
+                dx /= length
+                dy /= length
+                speed = PLAYER_SPEED
+                max_move = speed * dt * 1.2
+                new_x = player.x + dx * speed * dt
+                new_y = player.y + dy * speed * dt
+
+                if distance(player.x, player.y, new_x, new_y) > max_move * 1.5:
+                    logger.warning(f"Игрок {player.id} пытался телепортироваться")
+                else:
+                    if not is_wall(new_x, player.y) and not self.collides_with_players(new_x, player.y, player.id):
+                        player.x = new_x
+                    if not is_wall(player.x, new_y) and not self.collides_with_players(player.x, new_y, player.id):
+                        player.y = new_y
+
+            # Стрельба
+            if (inputs['shoot'] and not player.reloading and player.ammo > 0 and
+                (now - player.last_shot_time) >= SHOT_COOLDOWN):
+                player.last_shot_time = now
+                player.ammo -= 1
+                self.process_shot(player)
+
+            # Бомба
+            if inputs['bomb'] and player.team == 'T' and self.bomb.status == 'none' and player.alive:
+                for site_x, site_y in BOMB_SITES:
+                    if distance(player.x, player.y, site_x, site_y) < 1.0:
+                        self.plant_bomb(player.id, site_x, site_y)
+                        break
+
+            # Обезвреживание
+            if inputs['defuse'] and player.team == 'CT' and self.bomb.status == 'planted' and player.alive:
+                if not self.bomb.defusing:
+                    if distance(player.x, player.y, self.bomb.x, self.bomb.y) < 1.0:
+                        self.bomb.defusing = True
+                        self.bomb.defuser_id = player.id
+                        self.bomb.defuse_timer = BOMB_DEFUSE_TIME
+
+            # Перезарядка
+            if inputs['reload'] and not player.reloading and player.ammo < player.max_ammo:
+                player.reloading = True
+                player.reload_timer = RELOAD_TIME
+
+        # Проверка окончания раунда (только если есть >=2 живых игроков)
+        alive_players = [p for p in self.players.values() if p.alive]
+        if len(alive_players) >= 2:
+            self.check_round_end()
+
+        # Авторесет через 5 секунд
         if self.round.phase == 'ended':
             if self.round_end_time == 0:
                 self.round_end_time = time.time()
             elif time.time() - self.round_end_time > 5.0:
                 self.reset_round()
+
+    def collides_with_players(self, x, y, exclude_id):
+        for pid, p in self.players.items():
+            if pid == exclude_id or not p.alive:
+                continue
+            if distance(x, y, p.x, p.y) < 0.6:
+                return True
+        return False
+
+    def process_shot(self, shooter):
+        # (оставляем без изменений из предыдущей версии)
+        ox, oy = shooter.x, shooter.y
+        angle = shooter.angle
+        max_dist = MAX_DEPTH
+        wall_dist = self.cast_ray(ox, oy, angle)
+        hit_player = None
+        hit_distance = max_dist
+        hit_head = False
+
+        for pid, target in self.players.items():
+            if pid == shooter.id or not target.alive:
+                continue
+            if self.line_circle_intersect(ox, oy, ox + math.cos(angle)*max_dist, oy + math.sin(angle)*max_dist,
+                                         target.x, target.y, 0.3):
+                dist_to_target = distance(ox, oy, target.x, target.y)
+                if dist_to_target < hit_distance:
+                    hit_distance = dist_to_target
+                    hit_player = target
+                    hit_head = False
+            head_x = target.x + math.cos(target.angle) * 0.15
+            head_y = target.y + math.sin(target.angle) * 0.15
+            if self.line_circle_intersect(ox, oy, ox + math.cos(angle)*max_dist, oy + math.sin(angle)*max_dist,
+                                         head_x, head_y, 0.12):
+                dist_to_head = distance(ox, oy, head_x, head_y)
+                if dist_to_head < hit_distance:
+                    hit_distance = dist_to_head
+                    hit_player = target
+                    hit_head = True
+
+        if wall_dist < hit_distance:
+            return
+
+        if hit_player:
+            damage = HEAD_DAMAGE if hit_head else BODY_DAMAGE
+            hit_player.health -= damage
+            if hit_player.health <= 0:
+                hit_player.health = 0
+                hit_player.alive = False
+                hit_player.deaths += 1
+                shooter.kills += 1
+                logger.info(f"Игрок {hit_player.id} убит игроком {shooter.id} ({'хэдшот' if hit_head else 'бодишот'})")
+
+    def line_circle_intersect(self, x1, y1, x2, y2, cx, cy, r):
+        dx, dy = x2 - x1, y2 - y1
+        fx, fy = x1 - cx, y1 - cy
+        a = dx*dx + dy*dy
+        b = 2*(fx*dx + fy*dy)
+        c = fx*fx + fy*fy - r*r
+        disc = b*b - 4*a*c
+        if disc < 0:
+            return False
+        disc = math.sqrt(disc)
+        t1 = (-b - disc)/(2*a)
+        t2 = (-b + disc)/(2*a)
+        return (0 <= t1 <= 1) or (0 <= t2 <= 1)
+
+    def cast_ray(self, x, y, angle):
+        sin_a, cos_a = math.sin(angle), math.cos(angle)
+        step_x = 1 if cos_a >= 0 else -1
+        step_y = 1 if sin_a >= 0 else -1
+        if cos_a != 0:
+            delta_dist_x = abs(1/cos_a)
+            if cos_a > 0:
+                dist_x = (math.floor(x) + 1 - x) * delta_dist_x
+            else:
+                dist_x = (x - math.floor(x)) * delta_dist_x
+        else:
+            delta_dist_x, dist_x = float('inf'), float('inf')
+        if sin_a != 0:
+            delta_dist_y = abs(1/sin_a)
+            if sin_a > 0:
+                dist_y = (math.floor(y) + 1 - y) * delta_dist_y
+            else:
+                dist_y = (y - math.floor(y)) * delta_dist_y
+        else:
+            delta_dist_y, dist_y = float('inf'), float('inf')
+        cur_x, cur_y = x, y
+        for _ in range(MAX_DEPTH * 2):
+            if dist_x < dist_y:
+                dist_x += delta_dist_x
+                cur_x += step_x * delta_dist_x
+            else:
+                dist_y += delta_dist_y
+                cur_y += step_y * delta_dist_y
+            mx, my = int(math.floor(cur_x)), int(math.floor(cur_y))
+            if mx < 0 or my < 0 or mx >= MAP_WIDTH or my >= MAP_HEIGHT:
+                return MAX_DEPTH
+            if MAP[my][mx] == '1':
+                return distance(x, y, cur_x, cur_y)
+        return MAX_DEPTH
+
+    def plant_bomb(self, player_id, site_x, site_y):
+        if self.bomb.status == 'none':
+            self.bomb.status = 'planted'
+            self.bomb.x, self.bomb.y = site_x, site_y
+            self.bomb.timer = BOMB_EXPLODE_TIME
+            self.bomb.planter_id = player_id
+            self.bomb.defusing = False
+            self.bomb.defuser_id = None
+            logger.info(f"Бомба установлена на ({site_x}, {site_y})")
+
+    def end_round(self, winner):
+        if self.round.phase == 'ended':
+            return
+        self.round.phase = 'ended'
+        self.round.winner = winner
+        self.round_end_time = 0.0
+        if winner == 'T':
+            self.wins_T += 1
+        else:
+            self.wins_CT += 1
+        logger.info(f"Раунд окончен, победитель {winner}")
 
     def check_round_end(self):
         if self.round.phase == 'ended':
@@ -202,29 +401,17 @@ class GameState:
         elif not alive_ct:
             self.end_round('T')
 
-    def end_round(self, winner):
-        if self.round.phase == 'ended':
-            return
-        self.round.phase = 'ended'
-        self.round.winner = winner
-        if winner == 'T':
-            self.wins_T += 1
-        else:
-            self.wins_CT += 1
-        self.round_end_time = 0.0
-        logger.info(f"Раунд окончен, победитель {winner}")
-
     def reset_round(self):
         self.round.phase = 'playing'
-        self.round.time_left = 120.0
+        self.round.time_left = ROUND_TIME
         self.round.winner = None
         self.round_end_time = 0.0
         self.bomb.status = 'none'
         self.bomb.defusing = False
         for p in self.players.values():
             p.alive = True
-            p.health = 100
-            p.ammo = 30
+            p.health = MAX_HEALTH
+            p.ammo = MAX_AMMO
             p.reloading = False
             p.reload_timer = 0.0
             spawns = SPAWNS[p.team]
@@ -238,7 +425,6 @@ class GameState:
         if not p:
             return {}
         others = [pl.to_dict() for pid, pl in self.players.items() if pid != player_id]
-        logger.info(f"Запрос состояния для игрока {p.name}, возвращаем {len(others)} игроков")
         return {
             'player': p.to_dict(),
             'players': others,
