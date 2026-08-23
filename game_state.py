@@ -283,8 +283,9 @@ class GameState:
                 player.reloading = True
                 player.reload_timer = RELOAD_TIME
 
-        # 5. Проверка окончания раунда по убийству всех
-        self.check_round_end()
+        alive_players = [p for p in self.players.values() if p.alive]
+        if len(alive_players) >= 2:
+            self.check_round_end()
 
         # 6. Автоматический ресет через 5 секунд
         if self.round.phase == 'ended':
@@ -436,8 +437,12 @@ class GameState:
     def check_round_end(self):
         if self.round.phase == 'ended':
             return
-        alive_t = [p for p in self.players.values() if p.alive and p.team == 'T']
-        alive_ct = [p for p in self.players.values() if p.alive and p.team == 'CT']
+        alive_players = [p for p in self.players.values() if p.alive]
+        # Не завершаем раунд, если живых игроков меньше 2
+        if len(alive_players) < 2:
+            return
+        alive_t = [p for p in alive_players if p.team == 'T']
+        alive_ct = [p for p in alive_players if p.team == 'CT']
         if not alive_t:
             self.end_round('CT')
         elif not alive_ct:
