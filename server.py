@@ -1,129 +1,75 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-SkyStrike Server (FastAPI version for Vercel)
-Версия: 0.3
-Зависимости: fastapi, uvicorn (для локального запуска)
-Запуск локально: uvicorn server:app --reload
-Для Vercel: экспортируется переменная app
-"""
-
-import os
-import time
-import logging
-from contextlib import asynccontextmanager
+# server.py
+import os, time, logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from game_state import GameState
+import asyncio
+from contextlib import asynccontextmanager
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Глобальное состояние игры
 game = GameState()
-UPDATE_INTERVAL = 0.05  # 50 мс
+UPDATE_INTERVAL = 0.05
 
-# ----------------------------- Модели запросов -----------------------------
-class ConnectRequest(BaseModel):
-    name: Optional[str] = "Player"
+class ConnectReq(BaseModel):
+    name: str
+    team: Optional[str] = None
 
-class ActionRequest(BaseModel):
+class ActionReq(BaseModel):
     player_id: int
     inputs: Dict[str, Any]
 
-# ----------------------------- Lifespan (фоновая задача) -----------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Запускает фоновый цикл обновления при старте и останавливает при завершении."""
-    async def game_loop():
+    async def loop():
         while True:
-            try:
-                game.update(UPDATE_INTERVAL)
-            except Exception as e:
-                logger.error(f"Ошибка в игровом цикле: {e}")
+            game.update(UPDATE_INTERVAL)
             await asyncio.sleep(UPDATE_INTERVAL)
-
-    # Запускаем фоновую задачу
-    import asyncio
-    task = asyncio.create_task(game_loop())
-    logger.info("Сервер запущен, игровой цикл активен")
+    task = asyncio.create_task(loop())
     yield
-    # Остановка при завершении
     task.cancel()
-    logger.info("Сервер останавливается")
 
-# ----------------------------- FastAPI приложение -----------------------------
-app = FastAPI(title="SkyStrike Server", version="0.3", lifespan=lifespan)
+app = FastAPI(lifespan=lifespan)
 
-# ----------------------------- Эндпоинты -----------------------------
 @app.post("/connect")
-async def connect_handler(req: ConnectRequest):
-    """Регистрация нового игрока."""
-    try:
-        name = req.name or "Player"
-        name = name[:20]
-        player = game.add_player(name)
-        state = game.get_state(player.id)
-        state["player_id"] = player.id
-        logger.info(f"Подключение игрока {name} (ID {player.id})")
-        return state
-    except Exception as e:
-        logger.error(f"Ошибка в /connect: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+async def connect(req: ConnectReq):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "Empty name")
+    player = game.add_player(name, req.team)
+    if not player:
+        raise HTTPException(400, "Name already taken")
+    state = game.get_state(player.id)
+    state['player_id'] = player.id
+    return state
 
 @app.post("/action")
-async def action_handler(req: ActionRequest):
-    """Приём ввода от клиента и возврат состояния."""
-    try:
-        player = game.get_player(req.player_id)
-        if not player:
-            raise HTTPException(status_code=404, detail="player not found")
-        # Обновляем ввод игрока
-        player.inputs = req.inputs
-        # Возвращаем состояние
-        state = game.get_state(req.player_id)
-        return state
-    except Exception as e:
-        logger.error(f"Ошибка в /action: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+async def action(req: ActionReq):
+    p = game.get_player(req.player_id)
+    if not p:
+        raise HTTPException(404, "Player not found")
+    p.inputs = req.inputs
+    p.last_action_time = time.time()
+    return game.get_state(req.player_id)
 
 @app.get("/state")
-async def state_handler(player_id: int):
-    """Получение текущего состояния (без отправки действий)."""
-    try:
-        state = game.get_state(player_id)
-        if not state:
-            raise HTTPException(status_code=404, detail="player not found")
-        return state
-    except Exception as e:
-        logger.error(f"Ошибка в /state: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+async def state(player_id: int):
+    return game.get_state(player_id)
 
 @app.get("/heal")
-async def heal_handler():
-    """Эндпоинт для keep-alive (проверка работоспособности)."""
+async def heal():
     return {"status": "alive", "timestamp": time.time()}
 
 @app.get("/stats")
-async def stats_handler():
-    """Возвращает общую статистику сервера."""
+async def stats():
     return game.get_stats()
 
 @app.post("/reset")
-async def reset_handler():
-    """Принудительный сброс раунда (административный)."""
-    try:
-        game.reset_round()
-        logger.info("Раунд сброшен через /reset")
-        return {"status": "ok", "message": "round reset"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def reset():
+    game.reset_round()
+    return {"ok": True}
 
-# ----------------------------- Точка входа для локального запуска -----------------------------
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
