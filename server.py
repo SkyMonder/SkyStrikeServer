@@ -2,18 +2,20 @@
 # -*- coding: utf-8 -*-
 
 """
-SkyStrike Server
-Версия: 0.2
-Зависимости: aiohttp (pip install aiohttp)
-Запуск: python server.py (порт из PORT или 8080)
-Добавлено: /heal, /stats, /reset, улучшенная обработка ошибок.
+SkyStrike Server (FastAPI version for Vercel)
+Версия: 0.3
+Зависимости: fastapi, uvicorn (для локального запуска)
+Запуск локально: uvicorn server:app --reload
+Для Vercel: экспортируется переменная app
 """
 
 import os
-import json
-import asyncio
+import time
 import logging
-from aiohttp import web
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
 from game_state import GameState
 
 # Настройка логирования
@@ -24,116 +26,104 @@ logger = logging.getLogger(__name__)
 game = GameState()
 UPDATE_INTERVAL = 0.05  # 50 мс
 
+# ----------------------------- Модели запросов -----------------------------
+class ConnectRequest(BaseModel):
+    name: Optional[str] = "Player"
 
-async def game_loop():
-    """Фоновый цикл обновления игрового состояния."""
-    while True:
-        try:
-            game.update(UPDATE_INTERVAL)
-        except Exception as e:
-            logger.error(f"Ошибка в игровом цикле: {e}")
-        await asyncio.sleep(UPDATE_INTERVAL)
+class ActionRequest(BaseModel):
+    player_id: int
+    inputs: Dict[str, Any]
 
+# ----------------------------- Lifespan (фоновая задача) -----------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Запускает фоновый цикл обновления при старте и останавливает при завершении."""
+    async def game_loop():
+        while True:
+            try:
+                game.update(UPDATE_INTERVAL)
+            except Exception as e:
+                logger.error(f"Ошибка в игровом цикле: {e}")
+            await asyncio.sleep(UPDATE_INTERVAL)
 
-async def connect_handler(request):
+    # Запускаем фоновую задачу
+    import asyncio
+    task = asyncio.create_task(game_loop())
+    logger.info("Сервер запущен, игровой цикл активен")
+    yield
+    # Остановка при завершении
+    task.cancel()
+    logger.info("Сервер останавливается")
+
+# ----------------------------- FastAPI приложение -----------------------------
+app = FastAPI(title="SkyStrike Server", version="0.3", lifespan=lifespan)
+
+# ----------------------------- Эндпоинты -----------------------------
+@app.post("/connect")
+async def connect_handler(req: ConnectRequest):
     """Регистрация нового игрока."""
     try:
-        data = await request.json()
-        name = data.get('name', 'Player')
-        if not name:
-            name = 'Player'
-        name = name[:20]  # ограничение длины
+        name = req.name or "Player"
+        name = name[:20]
         player = game.add_player(name)
         state = game.get_state(player.id)
-        state['player_id'] = player.id
+        state["player_id"] = player.id
         logger.info(f"Подключение игрока {name} (ID {player.id})")
-        return web.json_response(state)
+        return state
     except Exception as e:
         logger.error(f"Ошибка в /connect: {e}")
-        return web.json_response({'error': str(e)}, status=400)
+        raise HTTPException(status_code=400, detail=str(e))
 
-
-async def action_handler(request):
+@app.post("/action")
+async def action_handler(req: ActionRequest):
     """Приём ввода от клиента и возврат состояния."""
     try:
-        data = await request.json()
-        player_id = data.get('player_id')
-        inputs = data.get('inputs', {})
-        if player_id is None:
-            return web.json_response({'error': 'player_id required'}, status=400)
-        player = game.get_player(player_id)
+        player = game.get_player(req.player_id)
         if not player:
-            return web.json_response({'error': 'player not found'}, status=404)
-        # Обновляем ввод игрока (перезаписываем)
-        player.inputs = inputs
+            raise HTTPException(status_code=404, detail="player not found")
+        # Обновляем ввод игрока
+        player.inputs = req.inputs
         # Возвращаем состояние
-        state = game.get_state(player_id)
-        return web.json_response(state)
+        state = game.get_state(req.player_id)
+        return state
     except Exception as e:
         logger.error(f"Ошибка в /action: {e}")
-        return web.json_response({'error': str(e)}, status=400)
+        raise HTTPException(status_code=400, detail=str(e))
 
-
-async def state_handler(request):
+@app.get("/state")
+async def state_handler(player_id: int):
     """Получение текущего состояния (без отправки действий)."""
     try:
-        player_id = request.query.get('player_id')
-        if player_id is None:
-            return web.json_response({'error': 'player_id required'}, status=400)
-        player_id = int(player_id)
         state = game.get_state(player_id)
         if not state:
-            return web.json_response({'error': 'player not found'}, status=404)
-        return web.json_response(state)
+            raise HTTPException(status_code=404, detail="player not found")
+        return state
     except Exception as e:
         logger.error(f"Ошибка в /state: {e}")
-        return web.json_response({'error': str(e)}, status=400)
+        raise HTTPException(status_code=400, detail=str(e))
 
-
-async def heal_handler(request):
+@app.get("/heal")
+async def heal_handler():
     """Эндпоинт для keep-alive (проверка работоспособности)."""
-    return web.json_response({'status': 'alive', 'timestamp': time.time()})
+    return {"status": "alive", "timestamp": time.time()}
 
-
-async def stats_handler(request):
+@app.get("/stats")
+async def stats_handler():
     """Возвращает общую статистику сервера."""
-    stats = game.get_stats()
-    return web.json_response(stats)
+    return game.get_stats()
 
-
-async def reset_handler(request):
+@app.post("/reset")
+async def reset_handler():
     """Принудительный сброс раунда (административный)."""
     try:
         game.reset_round()
         logger.info("Раунд сброшен через /reset")
-        return web.json_response({'status': 'ok', 'message': 'round reset'})
+        return {"status": "ok", "message": "round reset"}
     except Exception as e:
-        return web.json_response({'error': str(e)}, status=500)
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-async def not_found_handler(request):
-    return web.json_response({'error': 'not found'}, status=404)
-
-
-def main():
-    port = int(os.environ.get('PORT', 8080))
-    app = web.Application()
-    app.router.add_post('/connect', connect_handler)
-    app.router.add_post('/action', action_handler)
-    app.router.add_get('/state', state_handler)
-    app.router.add_get('/heal', heal_handler)
-    app.router.add_get('/stats', stats_handler)
-    app.router.add_post('/reset', reset_handler)
-    app.router.add_get('/{tail:.*}', not_found_handler)  # заглушка для остальных
-
-    # Запуск фоновой задачи обновления
-    loop = asyncio.get_event_loop()
-    loop.create_task(game_loop())
-
-    logger.info(f"Запуск сервера на порту {port}")
-    web.run_app(app, host='0.0.0.0', port=port)
-
-
-if __name__ == '__main__':
-    import time  # для heal_handler
-    main()
+# ----------------------------- Точка входа для локального запуска -----------------------------
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
