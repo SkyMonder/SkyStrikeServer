@@ -487,28 +487,28 @@ class GameState:
             'wins_CT': self.wins_CT
         }
     def process_shot(self, shooter: Player):
-    logger.info(f"=== ВЫСТРЕЛ ОТ {shooter.id} ({shooter.name}) ===")
-    logger.info(f"Позиция: ({shooter.x:.2f}, {shooter.y:.2f}), угол: {math.degrees(shooter.angle):.1f}°")
-    
-    # Проверяем всех живых игроков (кроме себя)
-    for pid, target in self.players.items():
-        if pid == shooter.id or not target.alive:
-            continue
+        logger.info(f"=== ВЫСТРЕЛ ОТ {shooter.id} ({shooter.name}) ===")
+        logger.info(f"Позиция: ({shooter.x:.2f}, {shooter.y:.2f}), угол: {math.degrees(shooter.angle):.1f}°")
         
-        dist = distance(shooter.x, shooter.y, target.x, target.y)
-        logger.info(f"Цель {pid} ({target.name}) на расстоянии {dist:.2f}")
-        
-        # ВРЕМЕННО: попадание по расстоянию (без проверки угла и стен)
-        if dist < 2.0:  # радиус 2 клетки
-            damage = 30
-            target.health -= damage
-            logger.info(f"ПОПАДАНИЕ! Нанесён урон {damage}, здоровье цели: {target.health}")
-            if target.health <= 0:
-                target.alive = False
-                target.health = 0
-                target.deaths += 1
-                shooter.kills += 1
-                logger.info(f"Игрок {target.name} убит")
-            break
-        else:
-            logger.info(f"Цель слишком далеко")
+        # Проверяем всех живых игроков (кроме себя)
+        for pid, target in self.players.items():
+            if pid == shooter.id or not target.alive:
+                continue
+            
+            dist = distance(shooter.x, shooter.y, target.x, target.y)
+            logger.info(f"Цель {pid} ({target.name}) на расстоянии {dist:.2f}")
+            
+            # ВРЕМЕННО: попадание по расстоянию (без проверки угла и стен)
+            if dist < 2.0:  # радиус 2 клетки
+                damage = 30
+                target.health -= damage
+                logger.info(f"ПОПАДАНИЕ! Нанесён урон {damage}, здоровье цели: {target.health}")
+                if target.health <= 0:
+                    target.alive = False
+                    target.health = 0
+                    target.deaths += 1
+                    shooter.kills += 1
+                    logger.info(f"Игрок {target.name} убит")
+                break
+            else:
+                logger.info(f"Цель слишком далеко")
