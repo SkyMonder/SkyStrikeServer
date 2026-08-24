@@ -1,6 +1,5 @@
 # game_state.py
-# Серверная логика SkyStrike
-# Версия 0.6.4 — исправлена проверка окончания раунда (убрано условие len(alive_players) < 2)
+# Версия 0.6.5 — добавлены события убийств (для уведомлений на клиенте)
 
 import math
 import time
@@ -134,6 +133,7 @@ class GameState:
         self.round_end_time = 0.0
         self.wins_T = 0
         self.wins_CT = 0
+        self.events: List[str] = []   # <---- список уведомлений
         logger.info("GameState инициализирован")
 
     # ----------------------------- Игроки -----------------------------
@@ -172,7 +172,7 @@ class GameState:
     def update(self, dt: float):
         now = time.time()
 
-        # ----- Таймаут: помечаем игрока мёртвым, а не удаляем -----
+        # ----- Таймаут: помечаем мёртвым -----
         for pid, p in list(self.players.items()):
             if p.paused:
                 continue
@@ -358,7 +358,13 @@ class GameState:
                 hit_player.alive = False
                 hit_player.deaths += 1
                 shooter.kills += 1
-                logger.info(f"Игрок {hit_player.name} убит")
+                # --- Добавляем событие ---
+                event_text = f"{shooter.name} killed {hit_player.name} ({'headshot' if hit_head else 'bodyshot'})"
+                self.events.append(event_text)
+                # Ограничим список последними 10 событиями
+                if len(self.events) > 10:
+                    self.events.pop(0)
+                logger.info(f"Событие: {event_text}")
         else:
             logger.info("Никто не попал")
 
@@ -445,7 +451,6 @@ class GameState:
         alive_t = [p for p in self.players.values() if p.alive and p.team == 'T']
         alive_ct = [p for p in self.players.values() if p.alive and p.team == 'CT']
         if not alive_t and not alive_ct:
-            # Все мертвы – ничего не делаем (можно ничья, но лучше победа по времени)
             return
         if not alive_t:
             self.end_round('CT')
@@ -478,13 +483,17 @@ class GameState:
         if not p:
             return {}
         others = [pl.to_dict() for pid, pl in self.players.items() if pid != player_id]
+        # Забираем события и очищаем список (чтобы не дублировать)
+        events = self.events.copy()
+        self.events.clear()
         return {
             'player': p.to_dict(),
             'players': others,
             'bomb': self.bomb.to_dict(),
             'round': self.round.to_dict(),
             'wins_T': self.wins_T,
-            'wins_CT': self.wins_CT
+            'wins_CT': self.wins_CT,
+            'events': events   # <---- добавляем события в ответ
         }
 
     def get_stats(self) -> dict:
