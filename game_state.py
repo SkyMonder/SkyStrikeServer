@@ -1,7 +1,6 @@
 # game_state.py
 # Серверная логика SkyStrike
-# Версия 0.6.3 — таймаут помечает игрока мёртвым, а не удаляет
-# Упрощённая проверка выстрела (без стен) для отладки
+# Версия 0.6.4 — исправлена проверка окончания раунда (убрано условие len(alive_players) < 2)
 
 import math
 import time
@@ -180,7 +179,6 @@ class GameState:
             if now - p.last_action_time > 5.0:
                 logger.info(f"Игрок {p.name} (ID {pid}) отключён по таймауту, помечаем мёртвым")
                 p.alive = False
-                # Не удаляем, чтобы сохранить состояние для логики раунда
 
         # ----- Обновление раунда -----
         if self.round.phase == 'playing':
@@ -301,7 +299,6 @@ class GameState:
                 return True
         return False
 
-    # Упрощённый метод выстрела (без проверки стен, но с проверкой расстояния и угла)
     def process_shot(self, shooter: Player):
         logger.info(f"=== ВЫСТРЕЛ ОТ {shooter.id} ({shooter.name}) ===")
         logger.info(f"Позиция: ({shooter.x:.2f}, {shooter.y:.2f}), угол: {math.degrees(shooter.angle):.1f}°")
@@ -316,24 +313,21 @@ class GameState:
             if pid == shooter.id or not target.alive:
                 continue
 
-            # Расстояние до цели
             dist = distance(shooter.x, shooter.y, target.x, target.y)
             if dist > max_dist:
                 continue
 
-            # Угол до цели
             angle_to_target = math.atan2(target.y - shooter.y, target.x - shooter.x)
             diff = angle_to_target - shooter.angle
             diff = (diff + math.pi) % (2 * math.pi) - math.pi
             if abs(diff) > half_fov:
                 continue
 
-            # Проверяем, что между ними нет стены (опционально – можно закомментировать)
+            # Проверка стены (закомментирована для отладки)
             # wall_dist = self.cast_ray(shooter.x, shooter.y, shooter.angle)
             # if wall_dist < dist:
             #     continue
 
-            # Попадание в тело
             if self.line_circle_intersect(shooter.x, shooter.y,
                                           shooter.x + math.cos(shooter.angle)*dist,
                                           shooter.y + math.sin(shooter.angle)*dist,
@@ -343,7 +337,6 @@ class GameState:
                     hit_player = target
                     hit_head = False
 
-            # Попадание в голову (смещена вперёд)
             head_x = target.x + math.cos(target.angle) * 0.15
             head_y = target.y + math.sin(target.angle) * 0.15
             if self.line_circle_intersect(shooter.x, shooter.y,
@@ -386,7 +379,6 @@ class GameState:
         return (0 <= t1 <= 1) or (0 <= t2 <= 1)
 
     def cast_ray(self, x, y, angle) -> float:
-        # Оставлен для возможного использования, но в process_shot мы его не вызываем
         sin_a = math.sin(angle)
         cos_a = math.cos(angle)
         step_x = 1 if cos_a >= 0 else -1
@@ -450,11 +442,11 @@ class GameState:
     def check_round_end(self):
         if self.round.phase == 'ended':
             return
-        alive_players = [p for p in self.players.values() if p.alive]
-        if len(alive_players) < 2:
+        alive_t = [p for p in self.players.values() if p.alive and p.team == 'T']
+        alive_ct = [p for p in self.players.values() if p.alive and p.team == 'CT']
+        if not alive_t and not alive_ct:
+            # Все мертвы – ничего не делаем (можно ничья, но лучше победа по времени)
             return
-        alive_t = [p for p in alive_players if p.team == 'T']
-        alive_ct = [p for p in alive_players if p.team == 'CT']
         if not alive_t:
             self.end_round('CT')
         elif not alive_ct:
