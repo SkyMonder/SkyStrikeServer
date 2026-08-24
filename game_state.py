@@ -1,6 +1,7 @@
 # game_state.py
 # Серверная логика SkyStrike
-# Версия 0.6.2 — с поддержкой паузы и отключением таймаута для игроков в паузе
+# Версия 0.6.3 — таймаут помечает игрока мёртвым, а не удаляет
+# Упрощённая проверка выстрела (без стен) для отладки
 
 import math
 import time
@@ -64,14 +65,14 @@ class Player:
     kills: int = 0
     deaths: int = 0
     last_action_time: float = field(default_factory=time.time)
-    paused: bool = False          # <--- флаг паузы
+    paused: bool = False
     inputs: dict = field(default_factory=lambda: {
         'forward': False, 'backward': False,
         'left': False, 'right': False,
         'mouse_dx': 0.0, 'mouse_dy': 0.0,
         'shoot': False, 'bomb': False,
         'defuse': False, 'reload': False,
-        'paused': False            # <--- добавляем в словарь
+        'paused': False
     })
 
     def to_dict(self) -> dict:
@@ -138,9 +139,6 @@ class GameState:
 
     # ----------------------------- Игроки -----------------------------
     def add_player(self, name: str, team: str) -> Optional[Player]:
-        # Проверка уникальности имени (можно закомментировать для отладки)
-        # if any(p.name == name for p in self.players.values()):
-        #     return None
         if team not in ('T', 'CT'):
             t = sum(1 for p in self.players.values() if p.team == 'T' and p.alive)
             ct = sum(1 for p in self.players.values() if p.team == 'CT' and p.alive)
@@ -175,13 +173,14 @@ class GameState:
     def update(self, dt: float):
         now = time.time()
 
-        # ----- Таймаут (только если не в паузе) -----
+        # ----- Таймаут: помечаем игрока мёртвым, а не удаляем -----
         for pid, p in list(self.players.items()):
             if p.paused:
-                continue   # игрок в паузе — не удаляем
-            if now - p.last_action_time > 5.0:   # 5 секунд бездействия
-                logger.info(f"Игрок {p.name} (ID {pid}) отключён по таймауту")
-                self.remove_player(pid)
+                continue
+            if now - p.last_action_time > 5.0:
+                logger.info(f"Игрок {p.name} (ID {pid}) отключён по таймауту, помечаем мёртвым")
+                p.alive = False
+                # Не удаляем, чтобы сохранить состояние для логики раунда
 
         # ----- Обновление раунда -----
         if self.round.phase == 'playing':
@@ -210,11 +209,8 @@ class GameState:
             if not player.alive:
                 continue
 
-            # Считываем ввод и обновляем флаг паузы
             inputs = player.inputs
             player.paused = inputs.get('paused', False)
-
-            # Если игрок в паузе — не обрабатываем движение/стрельбу
             if player.paused:
                 continue
 
@@ -250,19 +246,15 @@ class GameState:
                 dx /= length
                 dy /= length
                 speed = PLAYER_SPEED
-                max_move = speed * dt * 1.2
                 new_x = player.x + dx * speed * dt
                 new_y = player.y + dy * speed * dt
 
-                if distance(player.x, player.y, new_x, new_y) > max_move * 1.5:
-                    logger.warning(f"Игрок {player.id} пытался телепортироваться")
-                else:
-                    if not is_wall(new_x, player.y) and not self.collides_with_players(new_x, player.y, player.id):
-                        player.x = new_x
-                    if not is_wall(player.x, new_y) and not self.collides_with_players(player.x, new_y, player.id):
-                        player.y = new_y
+                if not is_wall(new_x, player.y) and not self.collides_with_players(new_x, player.y, player.id):
+                    player.x = new_x
+                if not is_wall(player.x, new_y) and not self.collides_with_players(player.x, new_y, player.id):
+                    player.y = new_y
 
-            # Стрельба
+            # Стрельба (упрощённая версия – без проверки стены)
             if (inputs['shoot'] and not player.reloading and player.ammo > 0 and
                 (now - player.last_shot_time) >= SHOT_COOLDOWN):
                 player.last_shot_time = now
@@ -309,12 +301,13 @@ class GameState:
                 return True
         return False
 
+    # Упрощённый метод выстрела (без проверки стен, но с проверкой расстояния и угла)
     def process_shot(self, shooter: Player):
-        ox, oy = shooter.x, shooter.y
-        angle = shooter.angle
+        logger.info(f"=== ВЫСТРЕЛ ОТ {shooter.id} ({shooter.name}) ===")
+        logger.info(f"Позиция: ({shooter.x:.2f}, {shooter.y:.2f}), угол: {math.degrees(shooter.angle):.1f}°")
+        
         max_dist = MAX_DEPTH
-        wall_dist = self.cast_ray(ox, oy, angle)
-
+        half_fov = math.radians(35)  # половина FOV (70°)
         hit_player = None
         hit_distance = max_dist
         hit_head = False
@@ -322,20 +315,42 @@ class GameState:
         for pid, target in self.players.items():
             if pid == shooter.id or not target.alive:
                 continue
-            # Тело
-            if self.line_circle_intersect(ox, oy, ox + math.cos(angle)*max_dist, oy + math.sin(angle)*max_dist,
-                                         target.x, target.y, PLAYER_RADIUS):
-                dist_to_target = distance(ox, oy, target.x, target.y)
-                if dist_to_target < hit_distance:
-                    hit_distance = dist_to_target
+
+            # Расстояние до цели
+            dist = distance(shooter.x, shooter.y, target.x, target.y)
+            if dist > max_dist:
+                continue
+
+            # Угол до цели
+            angle_to_target = math.atan2(target.y - shooter.y, target.x - shooter.x)
+            diff = angle_to_target - shooter.angle
+            diff = (diff + math.pi) % (2 * math.pi) - math.pi
+            if abs(diff) > half_fov:
+                continue
+
+            # Проверяем, что между ними нет стены (опционально – можно закомментировать)
+            # wall_dist = self.cast_ray(shooter.x, shooter.y, shooter.angle)
+            # if wall_dist < dist:
+            #     continue
+
+            # Попадание в тело
+            if self.line_circle_intersect(shooter.x, shooter.y,
+                                          shooter.x + math.cos(shooter.angle)*dist,
+                                          shooter.y + math.sin(shooter.angle)*dist,
+                                          target.x, target.y, PLAYER_RADIUS):
+                if dist < hit_distance:
+                    hit_distance = dist
                     hit_player = target
                     hit_head = False
-            # Голова (смещена вперёд)
+
+            # Попадание в голову (смещена вперёд)
             head_x = target.x + math.cos(target.angle) * 0.15
             head_y = target.y + math.sin(target.angle) * 0.15
-            if self.line_circle_intersect(ox, oy, ox + math.cos(angle)*max_dist, oy + math.sin(angle)*max_dist,
-                                         head_x, head_y, HEAD_RADIUS):
-                dist_to_head = distance(ox, oy, head_x, head_y)
+            if self.line_circle_intersect(shooter.x, shooter.y,
+                                          shooter.x + math.cos(shooter.angle)*dist,
+                                          shooter.y + math.sin(shooter.angle)*dist,
+                                          head_x, head_y, HEAD_RADIUS):
+                dist_to_head = distance(shooter.x, shooter.y, head_x, head_y)
                 if dist_to_head < hit_distance:
                     hit_distance = dist_to_head
                     hit_player = target
@@ -344,12 +359,15 @@ class GameState:
         if hit_player:
             damage = HEAD_DAMAGE if hit_head else BODY_DAMAGE
             hit_player.health -= damage
+            logger.info(f"ПОПАДАНИЕ! Нанесён урон {damage}, здоровье цели: {hit_player.health}")
             if hit_player.health <= 0:
                 hit_player.health = 0
                 hit_player.alive = False
                 hit_player.deaths += 1
                 shooter.kills += 1
-                logger.info(f"Игрок {hit_player.id} убит игроком {shooter.id} ({'хэдшот' if hit_head else 'бодишот'})")
+                logger.info(f"Игрок {hit_player.name} убит")
+        else:
+            logger.info("Никто не попал")
 
     def line_circle_intersect(self, x1, y1, x2, y2, cx, cy, r) -> bool:
         dx = x2 - x1
@@ -368,6 +386,7 @@ class GameState:
         return (0 <= t1 <= 1) or (0 <= t2 <= 1)
 
     def cast_ray(self, x, y, angle) -> float:
+        # Оставлен для возможного использования, но в process_shot мы его не вызываем
         sin_a = math.sin(angle)
         cos_a = math.cos(angle)
         step_x = 1 if cos_a >= 0 else -1
@@ -486,29 +505,3 @@ class GameState:
             'wins_T': self.wins_T,
             'wins_CT': self.wins_CT
         }
-    def process_shot(self, shooter: Player):
-        logger.info(f"=== ВЫСТРЕЛ ОТ {shooter.id} ({shooter.name}) ===")
-        logger.info(f"Позиция: ({shooter.x:.2f}, {shooter.y:.2f}), угол: {math.degrees(shooter.angle):.1f}°")
-        
-        # Проверяем всех живых игроков (кроме себя)
-        for pid, target in self.players.items():
-            if pid == shooter.id or not target.alive:
-                continue
-            
-            dist = distance(shooter.x, shooter.y, target.x, target.y)
-            logger.info(f"Цель {pid} ({target.name}) на расстоянии {dist:.2f}")
-            
-            # ВРЕМЕННО: попадание по расстоянию (без проверки угла и стен)
-            if dist < 2.0:  # радиус 2 клетки
-                damage = 30
-                target.health -= damage
-                logger.info(f"ПОПАДАНИЕ! Нанесён урон {damage}, здоровье цели: {target.health}")
-                if target.health <= 0:
-                    target.alive = False
-                    target.health = 0
-                    target.deaths += 1
-                    shooter.kills += 1
-                    logger.info(f"Игрок {target.name} убит")
-                break
-            else:
-                logger.info(f"Цель слишком далеко")
