@@ -1,13 +1,10 @@
 # shared.py
-# Общие константы для клиента и сервера
-
 MAX_AMMO = 30
 MAX_HEALTH = 100
 PLAYER_SPEED = 3.0
 SHOT_COOLDOWN = 0.25
 RELOAD_TIME = 1.8
 
-# NEW: параметры для разных видов оружия
 WEAPON_DATA = {
     'ak47': {
         'ammo': 30,
@@ -15,7 +12,9 @@ WEAPON_DATA = {
         'damage': 30,
         'fire_rate': 0.1,
         'spread': 0.02,
-        'name': 'AK-47'
+        'name': 'AK-47',
+        'price': 2700,
+        'max_ammo': 30
     },
     'deagle': {
         'ammo': 7,
@@ -23,7 +22,9 @@ WEAPON_DATA = {
         'damage': 50,
         'fire_rate': 0.4,
         'spread': 0.01,
-        'name': 'Desert Eagle'
+        'name': 'Desert Eagle',
+        'price': 650,
+        'max_ammo': 7
     },
     'm4a1': {
         'ammo': 30,
@@ -31,7 +32,9 @@ WEAPON_DATA = {
         'damage': 25,
         'fire_rate': 0.08,
         'spread': 0.015,
-        'name': 'M4A1'
+        'name': 'M4A1',
+        'price': 3100,
+        'max_ammo': 30
     },
     'awp': {
         'ammo': 10,
@@ -39,9 +42,9 @@ WEAPON_DATA = {
         'damage': 100,
         'fire_rate': 0.8,
         'spread': 0.001,
-        'name': 'AWP'
+        'name': 'AWP',
+        'price': 4750,
+        'max_ammo': 10
     }
 }
-
-# По умолчанию для совместимости
 DEFAULT_WEAPON = 'ak47'
