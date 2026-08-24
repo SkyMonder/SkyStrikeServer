@@ -341,9 +341,6 @@ class GameState:
                     hit_player = target
                     hit_head = True
 
-        if wall_dist < hit_distance:
-            return
-
         if hit_player:
             damage = HEAD_DAMAGE if hit_head else BODY_DAMAGE
             hit_player.health -= damage
